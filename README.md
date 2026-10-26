@@ -31,6 +31,20 @@ docker compose up -d
 > **关于镜像源**：CI 推送到官方 `ghcr.io`（镜像站只代理下载，不接受上传），
 > 部署时从 `ghcr.nju.edu.cn` 拉取加速。compose 里已写好镜像站地址。
 
+## 可选：给界面加登录密码
+
+默认零密码、开箱即用。如果想给整个 web 界面加一道登录门，在
+`docker-compose.yml` 里设置环境变量 `CHAT2API_UI_PASSWORD`：
+
+```yaml
+    environment:
+      CHAT2API_UI_PASSWORD: "你的密码"
+```
+
+设置后访问界面会先看到登录页，输入正确密码才进入。**注意不要把真实密码
+提交进仓库**，部署时在 `.env` 或本地 compose 覆盖即可。带 `Authorization`
+header 的 API 客户端（Cline/Cherry Studio 等）不受影响，照常直通。
+
 ## 端口：只有一个
 
 **宿主机上只有 8082 一个端口**，界面和 API 都在它上面：

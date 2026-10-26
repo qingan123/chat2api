@@ -15,6 +15,7 @@
 # 可调项（一般不用改）：
 #   TZ                        容器时区，镜像默认 Asia/Shanghai
 #   CHAT2API_API_KEY          给 /v1 客户端访问加密钥（默认不启用）
+#   CHAT2API_UI_PASSWORD      给整个 web 界面加登录密码（留空 = 不启用登录门）
 services:
   chat2api:
     # 南京大学镜像站：拉取加速。官方 ghcr.io 仅用于 CI 推送。
@@ -23,6 +24,11 @@ services:
     restart: unless-stopped
     ports:
       - "8082:8082"   # 界面 + OpenAI 兼容 API 共用一个端口
+    environment:
+      TZ: Asia/Shanghai
+      # 设置后访问界面需先登录；不设置则保持原样（无密码）。
+      # 注意：不要把真实密码提交进仓库，部署时在 .env 或此处配置。
+      CHAT2API_UI_PASSWORD: ""
     volumes:
       # 账号、配置、日志、凭证加密密钥都在这里。备份它就等于备份了全部状态。
       # 属主由容器启动时自动修正，不需要手工 chown。

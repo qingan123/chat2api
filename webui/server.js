@@ -46,6 +46,117 @@ const UPSTREAM_MGMT = '/v0/management'
 const ALIAS_MGMT = '/management'
 
 /* ------------------------------------------------------------------ *
+ * Optional UI password gate.
+ *
+ * Enabled only when CHAT2API_UI_PASSWORD is set (non-empty). When
+ * unset, the whole gate is a no-op and every request passes through
+ * exactly as before.
+ * ------------------------------------------------------------------ */
+const UI_PASSWORD = process.env.CHAT2API_UI_PASSWORD || ''
+const AUTH_COOKIE = 'chat2api_ui_auth'
+
+function parseCookies(req) {
+  const out = {}
+  const raw = req.headers.cookie || ''
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=')
+    if (i < 0) continue
+    const k = part.slice(0, i).trim()
+    const v = part.slice(i + 1).trim()
+    try { out[k] = decodeURIComponent(v) } catch { out[k] = v }
+  }
+  return out
+}
+
+function hasUiAuth(req) {
+  if (!UI_PASSWORD) return true
+  return parseCookies(req)[AUTH_COOKIE] === UI_PASSWORD
+}
+
+function hasApiAuth(req) {
+  // API clients may authenticate via Authorization header (API key / Bearer).
+  return typeof req.headers.authorization === 'string' && req.headers.authorization.length > 0
+}
+
+const LOGIN_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat2API 登录</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(1200px 700px at 50% -10%, #1e293b 0%, #0f172a 55%, #020617 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #e2e8f0;
+  }
+  .card {
+    width: 100%; max-width: 360px; padding: 36px 32px; margin: 20px;
+    background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,0.5); backdrop-filter: blur(12px);
+  }
+  h1 { margin: 0 0 6px; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
+  .sub { margin: 0 0 28px; font-size: 13px; color: #94a3b8; }
+  label { display: block; font-size: 13px; color: #cbd5e1; margin-bottom: 8px; }
+  input {
+    width: 100%; padding: 12px 14px; font-size: 15px; color: #f1f5f9;
+    background: rgba(2, 6, 23, 0.6); border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 10px; outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18); }
+  button {
+    width: 100%; margin-top: 18px; padding: 12px; font-size: 15px; font-weight: 600;
+    color: #0b1120; background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+    border: none; border-radius: 10px; cursor: pointer; transition: transform .06s, filter .15s;
+  }
+  button:hover { filter: brightness(1.06); }
+  button:active { transform: translateY(1px); }
+  .err { display: none; margin-top: 14px; font-size: 13px; color: #fca5a5; }
+  .err.show { display: block; }
+</style>
+</head>
+<body>
+  <form class="card" id="f">
+    <h1>Chat2API</h1>
+    <p class="sub">请输入访问密码</p>
+    <label for="pwd">密码</label>
+    <input type="password" id="pwd" autocomplete="current-password" autofocus>
+    <button type="submit">登 录</button>
+    <div class="err" id="err">密码错误，请重试</div>
+  </form>
+  <script>
+    document.getElementById('f').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pwd = document.getElementById('pwd').value;
+      const res = await fetch('/__auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+      });
+      if (res.ok) { location.href = '/'; return; }
+      document.getElementById('err').classList.add('show');
+    });
+  </script>
+</body>
+</html>`
+
+function sendLoginPage(res, status) {
+  res.writeHead(status || 200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store'
+  })
+  res.end(LOGIN_HTML)
+}
+
+function sendJson(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+  res.end(JSON.stringify(obj))
+}
+
+/* ------------------------------------------------------------------ *
  * Bridge access
  * ------------------------------------------------------------------ */
 let shim = null
@@ -438,6 +549,42 @@ function dispatch(req, res, urlPath) {
 function createServer() {
   return http.createServer((req, res) => {
     const urlPath = (req.url || '/').split('?')[0]
+
+    /* --- optional UI password gate --- */
+    if (urlPath === '/__auth/login' && req.method === 'POST') {
+      let body = ''
+      req.on('data', (c) => { body += c; if (body.length > 1024) req.destroy() })
+      req.on('end', () => {
+        let ok = false
+        try { ok = UI_PASSWORD && JSON.parse(body).password === UI_PASSWORD } catch {}
+        if (ok) {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Set-Cookie': AUTH_COOKIE + '=' + encodeURIComponent(UI_PASSWORD)
+              + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000'
+          })
+          res.end('{"ok":true}')
+        } else {
+          sendJson(res, 401, { ok: false, error: 'wrong password' })
+        }
+      })
+      return
+    }
+    if (urlPath === '/health') { dispatch(req, res, urlPath); return }
+    if (urlPath === '/favicon.ico') { res.writeHead(204); res.end(); return }
+
+    // Anything carrying an Authorization header is an API client: pass through.
+    if (hasApiAuth(req)) {
+      // fall through to the normal router below
+    } else if (!hasUiAuth(req)) {
+      // Browser without a valid session cookie: show the login page.
+      if (urlPath === '/' || urlPath === '/index.html' || req.method === 'GET') {
+        sendLoginPage(res, 200)
+      } else {
+        sendJson(res, 401, { ok: false, error: 'unauthorized' })
+      }
+      return
+    }
 
     if (urlPath === '/__ipc' && req.method === 'POST') { void handleIpc(req, res); return }
     if (urlPath === '/__ipc/events') { handleEvents(req, res); return }
